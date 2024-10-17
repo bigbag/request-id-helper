@@ -1,0 +1,6 @@
+[run]
+omit=tests/*, request_id_helper/version.py
+
+[report]
+exclude_lines =
+    if __name__ == .__main__.:
