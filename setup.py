@@ -33,7 +33,7 @@ setup(
     name="request-id-helper",
     version=str(version.VERSION),
     license="Apache License, Version 2.0",
-    description="Helper for starlette to add request id in logger",
+    description="Helper to add request id in logger and context",
     long_description=readme,
     long_description_content_type="text/markdown",
     author="Pavel Liashkov",
