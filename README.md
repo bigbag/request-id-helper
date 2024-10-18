@@ -10,7 +10,7 @@
 
 **request-id-helper** is a helper to add request id in logger and context.
 
-* [Project Changelog](CHANGELOG.md)
+* [Project Changelog](https://github.com/bigbag/request-id-helper/blob/main/CHANGELOG.md)
 
 ## Installation
 
