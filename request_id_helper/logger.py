@@ -1,4 +1,4 @@
-from logging import LogRecord, setLogRecordFactory
+from logging import Formatter, LogRecord, setLogRecordFactory
 from logging.config import dictConfig
 from typing import Any, Dict
 
@@ -16,3 +16,10 @@ class LogExtraFactory(LogRecord):
 def init_logger(config: Dict[str, Any]):
     dictConfig(config)
     setLogRecordFactory(LogExtraFactory)
+
+
+class RequestIdFormatter(Formatter):
+    def format(self, record):
+        if not hasattr(record, "request_id"):
+            record.request_id = "N/A"
+        return super().format(record)

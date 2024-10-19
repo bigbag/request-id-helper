@@ -32,6 +32,7 @@ LOGGING = {
     "disable_existing_loggers": 0,
     "formatters": {
         "default": {
+            "()": "request_id_helper.RequestIdFormatter",
             "format": "[%(asctime)s] %(levelname)s [%(request_id)s] %(name)s | %(message)s",
             "datefmt": "%d/%b/%Y %H:%M:%S",
         }
