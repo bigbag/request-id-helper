@@ -1,6 +1,8 @@
 from .helper import RequestIdCtx, request_id_ctx, set_request_id
 from .logger import LogExtraFactory, RequestIdFormatter, init_logger
 
+__version__ = "1.0.0"
+
 __all__ = [
     "LogExtraFactory",
     "RequestIdFormatter",
@@ -8,4 +10,5 @@ __all__ = [
     "init_logger",
     "request_id_ctx",
     "set_request_id",
+    "__version__",
 ]

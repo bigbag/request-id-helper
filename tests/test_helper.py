@@ -1,113 +1,155 @@
-from unittest.mock import patch
+import asyncio
+from uuid import UUID
 
 import pytest
 
 from request_id_helper import RequestIdCtx, request_id_ctx, set_request_id
 
 
-def test_request_id_ctx():
-    assert request_id_ctx.set("TEST") is None
-    assert request_id_ctx.get() == "TEST"
+def test_request_id_ctx_create_uses_custom_generator() -> None:
+    context = RequestIdCtx(lambda: "REQUEST_ID")
+
+    assert context.create() == "REQUEST_ID"
+    assert context.get() == "REQUEST_ID"
 
 
-def test_custom_id_generator():
-    request_id_ctx = RequestIdCtx(lambda: "REQUEST_ID")
-    assert request_id_ctx.create() == "REQUEST_ID"
+def test_sync_decorator_exposes_generated_id_only_during_call() -> None:
+    request_id_ctx.set("parent")
 
-
-def test_set_request_id_sync():
     @set_request_id()
-    def sample_sync_function():
-        return "sync_result"
+    def handler() -> str:
+        return request_id_ctx.get()
 
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = sample_sync_function()
+    request_id = handler()
 
-    assert result == "sync_result"
-    mock_create.assert_called_once()
+    assert request_id != "parent"
+    assert request_id_ctx.get() == "parent"
+    request_id_ctx.reset()
+
+
+def test_sync_decorator_restores_parent_after_exception() -> None:
+    request_id_ctx.set("parent")
+
+    @set_request_id()
+    def handler() -> None:
+        assert request_id_ctx.get() != "parent"
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        handler()
+
+    assert request_id_ctx.get() == "parent"
+    request_id_ctx.reset()
 
 
 @pytest.mark.asyncio
-async def test_set_request_id_async():
+async def test_async_decorator_restores_parent_after_cancellation() -> None:
+    request_id_ctx.set("parent")
+    started = asyncio.Event()
+
     @set_request_id()
-    async def sample_async_function():
-        return "async_result"
+    async def handler() -> None:
+        assert request_id_ctx.get() != "parent"
+        started.set()
+        await asyncio.Future()
 
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = await sample_async_function()
+    task = asyncio.create_task(handler())
+    await started.wait()
+    task.cancel()
 
-    assert result == "async_result"
-    mock_create.assert_called_once()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
-
-def test_set_request_id_sync_with_args():
-    @set_request_id()
-    def sample_sync_function_with_args(arg1, arg2):
-        return f"sync_result: {arg1}, {arg2}"
-
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = sample_sync_function_with_args("hello", "world")
-
-    assert result == "sync_result: hello, world"
-    mock_create.assert_called_once()
+    assert request_id_ctx.get() == "parent"
+    request_id_ctx.reset()
 
 
 @pytest.mark.asyncio
-async def test_set_request_id_async_with_args():
+async def test_async_decorator_restores_the_default_after_exception() -> None:
     @set_request_id()
-    async def sample_async_function_with_args(arg1, arg2):
-        return f"async_result: {arg1}, {arg2}"
+    async def handler() -> None:
+        assert request_id_ctx.get()
+        raise RuntimeError("boom")
 
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = await sample_async_function_with_args("hello", "world")
+    with pytest.raises(RuntimeError, match="boom"):
+        await handler()
 
-    assert result == "async_result: hello, world"
-    mock_create.assert_called_once()
+    assert request_id_ctx.get() == ""
 
 
-def test_set_request_id_sync_with_kwargs():
+def test_nested_decorators_restore_the_outer_id() -> None:
+    seen: list[str] = []
+
     @set_request_id()
-    def sample_sync_function_with_kwargs(**kwargs):
-        return f"sync_result: {kwargs}"
+    def inner() -> None:
+        seen.append(request_id_ctx.get())
 
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = sample_sync_function_with_kwargs(key1="value1", key2="value2")
+    @set_request_id()
+    def outer() -> None:
+        outer_id = request_id_ctx.get()
+        inner()
+        seen.append(request_id_ctx.get())
+        assert seen[0] != outer_id
 
-    assert result == "sync_result: {'key1': 'value1', 'key2': 'value2'}"
-    mock_create.assert_called_once()
+    outer()
+
+    assert seen[0] != seen[1]
+    assert request_id_ctx.get() == ""
 
 
 @pytest.mark.asyncio
-async def test_set_request_id_async_with_kwargs():
+async def test_async_decorator_isolates_concurrent_calls() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
     @set_request_id()
-    async def sample_async_function_with_kwargs(**kwargs):
-        return f"async_result: {kwargs}"
+    async def handler() -> str:
+        entered.set()
+        await release.wait()
+        return request_id_ctx.get()
 
-    with patch.object(request_id_ctx, "create") as mock_create:
-        result = await sample_async_function_with_kwargs(key1="value1", key2="value2")
+    first = asyncio.create_task(handler())
+    await entered.wait()
+    entered.clear()
+    second = asyncio.create_task(handler())
+    await entered.wait()
+    release.set()
 
-    assert result == "async_result: {'key1': 'value1', 'key2': 'value2'}"
-    mock_create.assert_called_once()
+    first_id, second_id = await asyncio.gather(first, second)
+
+    assert first_id != second_id
+    assert request_id_ctx.get() == ""
 
 
-def test_set_request_id_preserves_function_metadata():
-    def sample_function():
-        """Sample docstring"""
-        pass
+def test_decorator_preserves_sync_metadata_and_arguments() -> None:
+    @set_request_id()
+    def handler(value: str, *, suffix: str) -> str:
+        """Return the provided value."""
+        return f"{value}{suffix}"
 
-    decorated_function = set_request_id()(sample_function)
-
-    assert decorated_function.__name__ == "sample_function"
-    assert decorated_function.__doc__ == "Sample docstring"
+    assert handler("hello", suffix="!") == "hello!"
+    assert handler.__name__ == "handler"
+    assert handler.__doc__ == "Return the provided value."
 
 
 @pytest.mark.asyncio
-async def test_set_request_id_preserves_async_function_metadata():
-    async def sample_async_function():
-        """Sample async docstring"""
-        pass
+async def test_decorator_preserves_async_metadata_and_arguments() -> None:
+    @set_request_id()
+    async def handler(value: str, *, suffix: str) -> str:
+        """Return the provided value asynchronously."""
+        return f"{value}{suffix}"
 
-    decorated_function = set_request_id()(sample_async_function)
+    assert await handler("hello", suffix="!") == "hello!"
+    assert handler.__name__ == "handler"
+    assert handler.__doc__ == "Return the provided value asynchronously."
 
-    assert decorated_function.__name__ == "sample_async_function"
-    assert decorated_function.__doc__ == "Sample async docstring"
+
+def test_sync_decorator_generates_a_v4_uuid_and_restores_the_default() -> None:
+    @set_request_id()
+    def handler() -> str:
+        return request_id_ctx.get()
+
+    generated_id = handler()
+
+    assert UUID(generated_id).version == 4
+    assert request_id_ctx.get() == ""

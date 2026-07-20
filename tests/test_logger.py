@@ -1,100 +1,127 @@
 import logging
+from collections.abc import Generator
+from logging import LogRecord
+from typing import Any
+
+import pytest
 
 from request_id_helper import LogExtraFactory, RequestIdFormatter, init_logger, request_id_ctx
 
 
-class MockLogHandler(logging.Handler):
-    records = []
+@pytest.fixture
+def restore_record_factory() -> Generator[None, None, None]:
+    factory = logging.getLogRecordFactory()
+    try:
+        yield
+    finally:
+        logging.setLogRecordFactory(factory)
 
-    def emit(self, record):
-        self.records.append(f"[{record.request_id}] {record.message}")
 
-
-def test_log_extra_factory(caplog):
-    REQUEST_ID = "REQUEST_ID"
-    mock_logger = MockLogHandler()
-    logger = logging.getLogger()
-    logging.setLogRecordFactory(LogExtraFactory)
-    logger.addHandler(mock_logger)
-
-    request_id_ctx.set(REQUEST_ID)
-    logger.error("an error")
-
-    request_id_ctx.set(None)
-    logger.error("an error")
-
-    assert REQUEST_ID in mock_logger.records[0]
-    assert "N/A" in mock_logger.records[1]
-
+def test_log_extra_factory_uses_context_or_fallback() -> None:
+    request_id_ctx.set("request-123")
+    record = LogExtraFactory("name", logging.INFO, __file__, 1, "message", (), None)
     request_id_ctx.reset()
+    fallback = LogExtraFactory("name", logging.INFO, __file__, 1, "message", (), None)
+
+    assert record.request_id == "request-123"
+    assert fallback.request_id == "N/A"
 
 
-def test_init_logger():
-    LOGGING = {
-        "version": 1,
-        "disable_existing_loggers": 0,
-        "formatters": {
-            "default": {
-                "format": "[%(asctime)s] %(levelname)s [%(request_id)s] %(name)s | %(message)s",
-                "datefmt": "%d/%b/%Y %H:%M:%S",
-            }
-        },
-        "handlers": {
-            "stdout": {
-                "level": "INFO",
-                "class": "logging.StreamHandler",
-                "formatter": "default",
-            },
-        },
-        "loggers": {
-            "": {
-                "handlers": ["stdout"],
-                "propagate": True,
-                "level": "INFO",
-            },
-        },
-    }
-    init_logger(LOGGING)
-    logger = logging.getLogger()
-    assert len(logger.handlers) == 1
+def test_formatter_adds_fallback_without_overwriting_a_record_id() -> None:
+    formatter = RequestIdFormatter("%(request_id)s %(message)s")
+    missing = logging.LogRecord("name", logging.INFO, __file__, 1, "message", (), None)
+    present = logging.LogRecord("name", logging.INFO, __file__, 1, "message", (), None)
+    present.request_id = "caller-id"
+
+    assert formatter.format(missing) == "N/A message"
+    assert formatter.format(present) == "caller-id message"
 
 
-def test_request_id_not_present():
-    formatter = RequestIdFormatter("%(request_id)s - %(message)s")
-    record = logging.LogRecord("test_logger", logging.INFO, "", 0, "Test message", None, None)
-    formatted_message = formatter.format(record)
-    assert formatted_message == "N/A - Test message"
+def test_init_logger_preserves_fields_from_the_existing_factory(
+    restore_record_factory: None,
+) -> None:
+    default_factory = logging.getLogRecordFactory()
+
+    def existing_factory(*args: Any, **kwargs: Any) -> LogRecord:
+        record = default_factory(*args, **kwargs)
+        record.trace_id = "trace-123"
+        return record
+
+    logging.setLogRecordFactory(existing_factory)
+    init_logger({"version": 1, "disable_existing_loggers": False})
+    record = logging.getLogRecordFactory()("name", logging.INFO, __file__, 1, "message", (), None)
+
+    assert record.trace_id == "trace-123"
+    assert record.request_id == "N/A"
 
 
-def test_request_id_present():
-    formatter = RequestIdFormatter("%(request_id)s - %(message)s")
-    record = logging.LogRecord("test_logger", logging.INFO, "", 0, "Test message", None, None)
-    record.request_id = "12345"
-    formatted_message = formatter.format(record)
-    assert formatted_message == "12345 - Test message"
+def test_init_logger_does_not_replace_a_request_id_already_on_a_record(
+    restore_record_factory: None,
+) -> None:
+    default_factory = logging.getLogRecordFactory()
+
+    def existing_factory(*args: Any, **kwargs: Any) -> LogRecord:
+        record = default_factory(*args, **kwargs)
+        record.request_id = "caller-id"
+        return record
+
+    logging.setLogRecordFactory(existing_factory)
+    init_logger({"version": 1, "disable_existing_loggers": False})
+    record = logging.getLogRecordFactory()("name", logging.INFO, __file__, 1, "message", (), None)
+
+    assert record.request_id == "caller-id"
 
 
-def test_request_id_empty_string():
-    formatter = RequestIdFormatter("%(request_id)s - %(message)s")
-    record = logging.LogRecord("test_logger", logging.INFO, "", 0, "Test message", None, None)
-    record.request_id = ""
-    formatted_message = formatter.format(record)
-    assert formatted_message == " - Test message"
+def test_init_logger_is_idempotent(restore_record_factory: None) -> None:
+    init_logger({"version": 1, "disable_existing_loggers": False})
+    factory = logging.getLogRecordFactory()
+    init_logger({"version": 1, "disable_existing_loggers": False})
+
+    assert logging.getLogRecordFactory() is factory
 
 
-def test_custom_format_string():
-    formatter = RequestIdFormatter("[%(request_id)s] %(levelname)s: %(message)s")
-    record = logging.LogRecord(
-        "test_logger", logging.WARNING, "", 0, "Custom format test", None, None
-    )
-    formatted_message = formatter.format(record)
-    assert formatted_message == "[N/A] WARNING: Custom format test"
+def test_init_logger_enriches_emitted_records(restore_record_factory: None) -> None:
+    records: list[LogRecord] = []
+
+    class CapturingHandler(logging.Handler):
+        def emit(self, record: LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("request-id-helper.tests.emitted-record")
+    handler = CapturingHandler()
+    previous_handlers = logger.handlers[:]
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.handlers = [handler]
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        init_logger({"version": 1, "disable_existing_loggers": False})
+        request_id_ctx.set("request-123")
+        logger.info("message")
+        request_id_ctx.reset()
+
+        assert len(records) == 1
+        assert records[0].request_id == "request-123"
+        assert records[0].getMessage() == "message"
+    finally:
+        logger.handlers = previous_handlers
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
 
 
-def test_request_id_not_overwritten():
-    formatter = RequestIdFormatter("%(request_id)s - %(message)s")
-    record = logging.LogRecord("test_logger", logging.INFO, "", 0, "Test message", None, None)
-    record.request_id = "existing_id"
-    formatted_message = formatter.format(record)
-    assert formatted_message == "existing_id - Test message"
-    assert record.request_id == "existing_id"
+def test_init_logger_wraps_a_factory_installed_later(restore_record_factory: None) -> None:
+    default_factory = logging.getLogRecordFactory()
+    init_logger({"version": 1, "disable_existing_loggers": False})
+
+    def external_factory(*args: Any, **kwargs: Any) -> LogRecord:
+        record = default_factory(*args, **kwargs)
+        record.external_trace_id = "trace-123"
+        return record
+
+    logging.setLogRecordFactory(external_factory)
+    init_logger({"version": 1, "disable_existing_loggers": False})
+    record = logging.getLogRecordFactory()("name", logging.INFO, __file__, 1, "message", (), None)
+
+    assert record.external_trace_id == "trace-123"
+    assert record.request_id == "N/A"

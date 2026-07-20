@@ -1,84 +1,97 @@
 # request-id-helper
 
-[![CI](https://github.com/bigbag/request-id-helper/workflows/CI/badge.svg)](https://github.com/bigbag/request-id-helper/actions?query=workflow%3ACI)
-[![codecov](https://codecov.io/gh/bigbag/request-id-helper/branch/main/graph/badge.svg?token=ZRUN7SUKB2)](https://codecov.io/gh/bigbag/request-id-helper)
-[![pypi](https://img.shields.io/pypi/v/request-id-helper.svg)](https://pypi.python.org/pypi/request-id-helper)
-[![downloads](https://img.shields.io/pypi/dm/request-id-helper.svg)](https://pypistats.org/packages/request-id-helper)
-[![versions](https://img.shields.io/pypi/pyversions/request-id-helper.svg)](https://github.com/bigbag/request-id-helper)
-[![license](https://img.shields.io/github/license/bigbag/request-id-helper.svg)](https://github.com/bigbag/request-id-helper/blob/master/LICENSE)
+Context-local request IDs for Python logging and async applications.
 
+## Requirements
 
-**request-id-helper** is a helper to add request id in logger and context.
-
-* [Project Changelog](https://github.com/bigbag/request-id-helper/blob/main/CHANGELOG.md)
+- Python 3.11–3.14
 
 ## Installation
 
-request-id-helper is available on PyPI.
-Use pip to install:
+```console
+uv add request-id-helper
+```
 
-    $ pip install request-id-helper
+```console
+pip install request-id-helper
+```
 
-## Basic Usage
+## Logging and scoped request IDs
 
-```py
+Configure a formatter that includes `%(request_id)s`, then decorate each request entry point. The generated ID is available for the complete call and is restored when the call finishes, raises, or is cancelled.
+
+```python
 import logging
-from request_id_helper import init_logger, set_request_id
 
+from request_id_helper import RequestIdFormatter, request_id_ctx, set_request_id
+
+handler = logging.StreamHandler()
+handler.setFormatter(RequestIdFormatter("%(levelname)s [%(request_id)s] %(message)s"))
 logger = logging.getLogger(__name__)
-
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": 0,
-    "formatters": {
-        "default": {
-            "()": "request_id_helper.RequestIdFormatter",
-            "format": "[%(asctime)s] %(levelname)s [%(request_id)s] %(name)s | %(message)s",
-            "datefmt": "%d/%b/%Y %H:%M:%S",
-        }
-    },
-    "handlers": {
-        "stdout": {
-            "level": "INFO",
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-        },
-    },
-    "loggers": {
-        "": {
-            "handlers": ["stdout"],
-            "propagate": True,
-            "level": "INFO",
-        },
-    },
-}
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
-def main():
-    init_logger(LOGGING)
-
-    @set_request_id()
-    def my_function() -> int:
-        
-        logger.info("Demo")
-
-        return 10
-
-    my_function()
-
-if __name__ == "__main__":
-    main()
-
+@set_request_id()
+def handle_request() -> None:
+    logger.info("handling request")
+    assert request_id_ctx.get()
 ```
 
+`set_request_id()` supports `async def` functions as well. Each decorated call receives an independent ID, including concurrent asyncio tasks. Nested decorated calls temporarily replace the outer ID and restore it when they return.
 
-```bash
-    [17/Oct/2024 20:13:02] INFO [459cb386-5947-4eec-b3d8-266605f40444] __main__ | Demo
+## Existing logging dictionaries
+
+Use `init_logger()` with an existing `logging.config.dictConfig` dictionary to install request-ID record enrichment. It composes with an already configured log-record factory and never overwrites a record that already has `request_id`.
+
+```python
+from request_id_helper import init_logger
+
+init_logger(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {"format": "%(levelname)s [%(request_id)s] %(message)s"}
+        },
+    }
+)
 ```
+
+`RequestIdFormatter` is an alternative for individual handlers. It uses `N/A` when a record has no request ID.
+
+## Direct context propagation
+
+Read the current value when making an outbound call:
+
+```python
+from request_id_helper import request_id_ctx
+
+headers = {"x-request-id": request_id_ctx.get()}
+```
+
+Workers can restore a propagated value with `request_id_ctx.set(serialized_request_id)`. Call `request_id_ctx.reset()` when the direct binding is no longer needed.
+
+## Examples
+
+```console
+uv run python examples/basic_usage.py
+uv run python examples/async_propagation.py
+```
+
+## Development
+
+```console
+uv sync --all-groups
+make lint
+make test
+make build
+```
+
 ## License
 
-request-id-helper is developed and distributed under the Apache 2.0 license.
+request-id-helper is distributed under the Apache License 2.0.
 
-## Reporting a Security Vulnerability
+## Reporting a security vulnerability
 
-See our [security policy](https://github.com/bigbag/request-id-helper/security/policy).
+See the [security policy](https://github.com/bigbag/request-id-helper/security/policy).
