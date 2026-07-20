@@ -509,7 +509,7 @@ wheels = [
 
 [[package]]
 name = "request-id-helper"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 
 [package.dev-dependencies]
