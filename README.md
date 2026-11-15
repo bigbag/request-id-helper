@@ -4,7 +4,7 @@ Context-local request IDs for Python logging and async applications.
 
 ## Requirements
 
-- Python 3.11–3.14
+- Python 3.11–3.15
 
 ## Installation
 
