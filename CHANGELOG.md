@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3 (2026-11-15)
+
+* Update changelog [Pavel Liashkov]
+* Add Python 3.15 support (#19) [Pavel Liashkov]
+* Bump version to 1.0.3 [Pavel Liashkov]
+
 ## 1.0.2 (2026-11-15)
 
 * Update changelog [Pavel Liashkov]
